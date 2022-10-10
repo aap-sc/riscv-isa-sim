@@ -117,31 +117,48 @@ bool sort_mem_region(const mem_cfg_t &a, const mem_cfg_t &b)
     return (a.base < b.base);
 }
 
-void merge_overlapping_memory_regions(std::vector<mem_cfg_t> &mems)
+static bool check_mem_overlap(const mem_cfg_t& L, const mem_cfg_t& R)
 {
-  // check the user specified memory regions and merge the overlapping or
-  // eliminate the containing parts
-  assert(!mems.empty());
+  reg_t L_start = L.base;
+  reg_t L_end   = L.base + L.size - 1;
+
+  reg_t R_start = R.base;
+  reg_t R_end   = R.base + R.size - 1;
+
+  return std::max(L_start, R_start) <= std::min(L_end, R_end);
+}
+
+static mem_cfg_t merge_mem_regions(const mem_cfg_t& L, const mem_cfg_t& R)
+{
+  // one can merge only intersecting regions
+  assert(check_mem_overlap(L, R));
+
+  reg_t merged_base = std::min(L.base, R.base);
+  reg_t merged_end_incl = std::max(L.base + L.size - 1, R.base + R.size - 1);
+  reg_t merged_size = merged_end_incl - merged_base + 1;
+
+  return mem_cfg_t(merged_base, merged_size);
+}
+
+static void merge_overlapping_memory_regions(std::vector<mem_cfg_t> &mems)
+{
+  if (mems.empty())
+    return;
 
   std::sort(mems.begin(), mems.end(), sort_mem_region);
-  for (auto it = mems.begin() + 1; it != mems.end(); ) {
-    reg_t start = prev(it)->base;
-    reg_t end = prev(it)->base + prev(it)->size;
-    reg_t start2 = it->base;
-    reg_t end2 = it->base + it->size;
 
-    //contains -> remove
-    if (start2 >= start && end2 <= end) {
-      it = mems.erase(it);
-    //partial overlapped -> extend
-    } else if (start2 >= start && start2 < end) {
-      prev(it)->size = std::max(end, end2) - start;
-      it = mems.erase(it);
-    // no overlapping -> keep it
-    } else {
-      it++;
+  std::vector<mem_cfg_t> merged_mem;
+  merged_mem.push_back(mems.front());
+
+  for (auto mem_it = std::next(mems.begin()); mem_it != mems.end(); ++mem_it) {
+    const auto& mem_int = *mem_it;
+    if (!check_mem_overlap(merged_mem.back(), mem_int)) {
+      merged_mem.push_back(mem_int);
+      continue;
     }
+    merged_mem.back() = merge_mem_regions(merged_mem.back(), mem_int);
   }
+  mems.swap(merged_mem);
 }
 
 static std::vector<mem_cfg_t> parse_mem_layout(const char* arg)
