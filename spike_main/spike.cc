@@ -187,7 +187,20 @@ static std::vector<mem_cfg_t> parse_mem_layout(const char* arg)
       exit(EXIT_FAILURE);
     }
 
-    res.push_back(mem_cfg_t(reg_t(base), reg_t(size)));
+    mem_cfg_t mem_region(base, size);
+    const uint64_t max_allowed_pa = (1ull << MAX_PADDR_BITS) - 1ull;
+    if ((mem_region.base + mem_region.size - 1) > max_allowed_pa) {
+      fprintf(stderr, "unsupported memory region "
+                      "{ base = 0x%llX, size = 0x%llX } specified\n"
+                      "currently, spike does not support physical adresses "
+                      "larger than 0x%llX)\n",
+                      (unsigned long long)mem_region.base,
+                      (unsigned long long)mem_region.size,
+                      (unsigned long long)max_allowed_pa);
+      exit(EXIT_FAILURE);
+    }
+
+    res.push_back(mem_region);
     if (!*p)
       break;
     if (*p != ',')
