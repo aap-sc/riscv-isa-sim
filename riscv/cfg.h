@@ -39,9 +39,13 @@ public:
     // ask that the page size is a multiple of the minimum page size, that the
     // page is aligned to the minimum page size, that the page is non-empty and
     // that the top address is still representable in a reg_t.
+    //
+    // Note: (base + size == 0) part of the assertion is to handle cases like
+    //   { base = 0xffff_ffff_ffff_f000, size: 0x1000 }
     return (size % PGSIZE == 0) &&
            (base % PGSIZE == 0) &&
-           (base + size > base);
+           (size > 0) &&
+           ((base + size > base) || (base + size == 0));
   }
 
   mem_cfg_t(reg_t base, reg_t size)
@@ -50,6 +54,15 @@ public:
     assert(mem_cfg_t::check_if_supported(base, size));
   }
 
+  reg_t get_base() const {
+    return base;
+  }
+
+  reg_t get_inclusive_end() const {
+    return base + size - 1;
+  }
+
+private:
   reg_t base;
   reg_t size;
 };

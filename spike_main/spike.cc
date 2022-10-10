@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <vector>
 #include <string>
+#include <limits>
 #include <memory>
 #include <fstream>
 #include "../VERSION"
@@ -111,21 +112,38 @@ static void read_file_bytes(const char *filename,size_t fileoff,
 
 bool sort_mem_region(const mem_cfg_t &a, const mem_cfg_t &b)
 {
-  if (a.base == b.base)
-    return (a.size < b.size);
+  if (a.get_base() == b.get_base())
+    return (a.get_inclusive_end() < b.get_inclusive_end());
   else
-    return (a.base < b.base);
+    return (a.get_base() < b.get_base());
 }
 
 static bool check_mem_overlap(const mem_cfg_t& L, const mem_cfg_t& R)
 {
-  reg_t L_start = L.base;
-  reg_t L_end   = L.base + L.size - 1;
+  reg_t L_start = L.get_base();
+  reg_t L_end   = L.get_inclusive_end();
 
-  reg_t R_start = R.base;
-  reg_t R_end   = R.base + R.size - 1;
+  reg_t R_start = R.get_base();
+  reg_t R_end   = R.get_inclusive_end();
 
   return std::max(L_start, R_start) <= std::min(L_end, R_end);
+}
+
+// there is a weird corner-case preventing two memory regions to be merged -
+// this can happen when the resulting size of a region is 2^64.
+// such regions are not representable with mem_cfg_t class
+static bool check_if_merge_covers_64bit_space(const mem_cfg_t& L,
+                                              const mem_cfg_t& R)
+{
+  if (!check_mem_overlap(L, R))
+    return false;
+
+  reg_t start = std::min(L.get_base(), R.get_base());
+  reg_t end = std::max(L.get_inclusive_end(), R.get_inclusive_end());
+
+  // if [base == 0] and [inclusive_end == (2 ^ 64 - 1)] - we can't merge such
+  // regions, since the mem_cfg_t does not support the resulting size
+  return (start == 0ull) && (end == std::numeric_limits<uint64_t>::max());
 }
 
 static mem_cfg_t merge_mem_regions(const mem_cfg_t& L, const mem_cfg_t& R)
@@ -133,8 +151,8 @@ static mem_cfg_t merge_mem_regions(const mem_cfg_t& L, const mem_cfg_t& R)
   // one can merge only intersecting regions
   assert(check_mem_overlap(L, R));
 
-  reg_t merged_base = std::min(L.base, R.base);
-  reg_t merged_end_incl = std::max(L.base + L.size - 1, R.base + R.size - 1);
+  reg_t merged_base = std::min(L.get_base(), R.get_base());
+  reg_t merged_end_incl = std::max(L.get_inclusive_end(), R.get_inclusive_end());
   reg_t merged_size = merged_end_incl - merged_base + 1;
 
   return mem_cfg_t(merged_base, merged_size);
@@ -155,6 +173,12 @@ static void merge_overlapping_memory_regions(std::vector<mem_cfg_t> &mems)
     if (!check_mem_overlap(merged_mem.back(), mem_int)) {
       merged_mem.push_back(mem_int);
       continue;
+    }
+    if (check_if_merge_covers_64bit_space(merged_mem.back(), mem_int)) {
+      merged_mem.clear();
+      merged_mem.push_back(mem_cfg_t(0ull, 0ull - PGSIZE));
+      merged_mem.push_back(mem_cfg_t(0ull - PGSIZE, PGSIZE));
+      break;
     }
     merged_mem.back() = merge_mem_regions(merged_mem.back(), mem_int);
   }
@@ -206,13 +230,12 @@ static std::vector<mem_cfg_t> parse_mem_layout(const char* arg)
 
     mem_cfg_t mem_region(base, size);
     const uint64_t max_allowed_pa = (1ull << MAX_PADDR_BITS) - 1ull;
-    if ((mem_region.base + mem_region.size - 1) > max_allowed_pa) {
-      fprintf(stderr, "unsupported memory region "
-                      "{ base = 0x%llX, size = 0x%llX } specified\n"
+    if (mem_region.get_inclusive_end() > max_allowed_pa) {
+      fprintf(stderr, "unsupported memory region [0x%llX, 0x%llX] specified\n"
                       "currently, spike does not support physical adresses "
                       "larger than 0x%llX)\n",
-                      (unsigned long long)mem_region.base,
-                      (unsigned long long)mem_region.size,
+                      (unsigned long long)mem_region.get_base(),
+                      (unsigned long long)mem_region.get_inclusive_end(),
                       (unsigned long long)max_allowed_pa);
       exit(EXIT_FAILURE);
     }
@@ -235,7 +258,8 @@ static std::vector<std::pair<reg_t, mem_t*>> make_mems(const std::vector<mem_cfg
   std::vector<std::pair<reg_t, mem_t*>> mems;
   mems.reserve(layout.size());
   for (const auto &cfg : layout) {
-    mems.push_back(std::make_pair(cfg.base, new mem_t(cfg.size)));
+    size_t size = cfg.get_inclusive_end() - cfg.get_base() + 1;
+    mems.push_back(std::make_pair(cfg.get_base(), new mem_t(size)));
   }
   return mems;
 }
